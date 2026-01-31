@@ -11,97 +11,133 @@ const {
   YOUTUBE_SEARCH: { MAX_MINUTES },
   INPUT_TYPES: { SONG },
 } = Constants;
+
 const search = promisify(YoutubeSearch);
 
 /**
- * This function does the actual api calls to youtube
- *
- * @param {String} searchTerms string to search on youtube with
- * @param {String} type the type of item being searched
- * @param {String[]} exclusionFilters exclusion texts for description, title
- * @returns {String[]} youtube links
+ * Searches YouTube and filters results based on criteria
+ * @param {string} searchTerms - Search query
+ * @param {string} type - Type of content (song, episode, etc.)
+ * @param {string[]} exclusionFilters - Terms to exclude from results
+ * @returns {Promise<string[]>} Array of YouTube URLs
  */
 const findLinks = async (searchTerms, type, exclusionFilters) => {
-  logInfo(`searching youtube with keywords "${searchTerms}"`);
-  const result = await search(searchTerms);
-  const isSong = Object.values(SONG).includes(type);
+  if (!searchTerms) {
+    return [];
+  }
+
+  logInfo(`Searching YouTube: "${searchTerms}"`);
   
-return result.videos
-    .filter(
-      video =>
-        !exclusionFilters ||
-        !(
-          exclusionFilters.some(exclusionFilter =>
-            video.title.includes(exclusionFilter)
-          ) ||
-          exclusionFilters.some(exclusionFilter =>
-            video.description.includes(exclusionFilter)
-          )
-        )
-    )
-    .filter(
-      video =>
-        (!isSong || video.seconds < MAX_MINUTES * 60) && video.seconds > 0
-    )
-    .slice(0, 10)
-    .map(video =>
-      video.url.includes('https://youtube.com')
-        ? video.url
-        : 'https://youtube.com' + video.url
-    );
+  try {
+    const result = await search(searchTerms);
+    const isSong = Object.values(SONG).includes(type);
+    
+    if (!result || !result.videos) {
+      return [];
+    }
+
+    return result.videos
+      .filter(video => {
+        if (!exclusionFilters || exclusionFilters.length === 0) {
+          return true;
+        }
+        
+        const titleMatch = exclusionFilters.some(filter =>
+          video.title.toLowerCase().includes(filter.toLowerCase())
+        );
+        const descMatch = exclusionFilters.some(filter =>
+          video.description.toLowerCase().includes(filter.toLowerCase())
+        );
+        
+        return !titleMatch && !descMatch;
+      })
+      .filter(video => {
+        if (!video.seconds || video.seconds <= 0) {
+          return false;
+        }
+        return !isSong || video.seconds < MAX_MINUTES * 60;
+      })
+      .slice(0, 10)
+      .map(video => {
+        if (video.url.startsWith('https://youtube.com')) {
+          return video.url;
+        }
+        return `https://youtube.com${video.url}`;
+      });
+  } catch (error) {
+    logInfo(`YouTube search failed: ${error.message}`);
+    return [];
+  }
 };
 
 /**
- * This function searches youtube for given songname
- * and returns the link of topmost result
- *
- * @param {String} itemName name of song
- * @param {String} albumName name of album
- * @param {String} artistName name of artist
- * @param {String} extraSearch extra search terms
- * @param {String} type type of download being requested
- * @param {String[]} exclusionFilters exclusion texts for description, title
- * @returns {String[]} youtube links
+ * Gets YouTube links for a given song/episode using various search strategies
+ * @param {Object} params - Search parameters
+ * @param {string} params.itemName - Name of song/episode
+ * @param {string} params.albumName - Name of album/show
+ * @param {string} params.artistName - Name of artist/publisher
+ * @param {string} params.extraSearch - Additional search terms
+ * @param {string} params.searchFormat - Custom search format template
+ * @param {string} params.type - Type of content
+ * @param {string[]} params.exclusionFilters - Terms to exclude
+ * @returns {Promise<string[]>} Array of YouTube URLs
  */
 const getLinks = async ({
   itemName,
   albumName,
   artistName,
-  extraSearch,
-  searchFormat,
+  extraSearch = '',
+  searchFormat = '',
   type,
-  exclusionFilters,
+  exclusionFilters = [],
 }) => {
+  if (!itemName) {
+    return [];
+  }
+
   let links = [];
-  if (searchFormat.length) {
+  
+  if (searchFormat) {
+    try {
+      const customSearch = generateTemplateString(
+        itemName,
+        albumName,
+        artistName,
+        searchFormat
+      );
+      links = await findLinks(customSearch, type, exclusionFilters);
+    } catch (error) {
+      logInfo(`Custom search format failed: ${error.message}`);
+    }
+  }
+  
+  if (links.length > 0) {
+    return links;
+  }
+
+  const extraSearchTerm = extraSearch ? ` ${extraSearch}` : '';
+  const similarity = StringSimilarity.compareTwoStrings(
+    itemName || '',
+    albumName || ''
+  );
+  
+  if (similarity < 0.5 && albumName) {
     links = await findLinks(
-      generateTemplateString(itemName, albumName, artistName, searchFormat),
+      `${albumName} - ${itemName}${extraSearchTerm}`,
       type,
       exclusionFilters
     );
   }
-  // custom search format failed or was never provided try the generic way
-  if (!links.length) {
-    const similarity = StringSimilarity.compareTwoStrings(itemName, albumName);
-    // to avoid duplicate song downloads
-    extraSearch = extraSearch ? ` ${extraSearch}` : '';
-    if (similarity < 0.5) {
-      links = await findLinks(
-        `${albumName} - ${itemName}${extraSearch}`,
-        type,
-        exclusionFilters
-      );
-    }
-    if (!links.length) {
-      links = await findLinks(
-        `${artistName} - ${itemName}${extraSearch}`,
-        type,
-        exclusionFilters
-      );
-    }
+  
+  if (links.length === 0 && artistName) {
+    links = await findLinks(
+      `${artistName} - ${itemName}${extraSearchTerm}`,
+      type,
+      exclusionFilters
+    );
   }
   
-return links;
+  return links;
 };
 
 export default getLinks;
