@@ -18,11 +18,22 @@ import { startup } from './lib/setup.js';
 import { logFailure } from './util/log-helper.js';
 import Runner from './util/runner.js';
 
-startup();
-try {
-  Runner().then(() => process.exit(0));
-} catch (error) {
-  logFailure('Something went wrong!');
-  console.log(error);
-  process.exit(1);
-}
+/**
+ * Main entry point for the CLI application
+ */
+const main = async () => {
+  try {
+    startup();
+    await Runner();
+    process.exit(0);
+  } catch (error) {
+    logFailure('Application error occurred');
+    console.error(error.message);
+    if (error.stack) {
+      console.error(error.stack);
+    }
+    process.exit(1);
+  }
+};
+
+main();
